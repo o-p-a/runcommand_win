@@ -1,0 +1,309 @@
+#! /usr/bin/ruby -E:UTF-8
+# -*- mode:Ruby; tab-width:4; coding:UTF-8; -*-
+# vi:set ft=ruby ts=4 fenc=UTF-8 :
+#----------------------------------------------------------------
+# runcommand
+#
+# 2020/09/18 opa
+#----------------------------------------------------------------
+
+ProgName = "runcommand"
+Version = "0.01"
+#=====dpk===== Copyright2020
+Copyright = "Copyright (c) 2020 by opa"
+#=====dpk=====
+
+#=====dpk===== os_is_windows?
+# Windows環境下かどうか判定する
+module Kernel
+ module_function
+	if RUBY_PLATFORM =~ /mswin(?!ce)|mingw|cygwin|bccwin|emx/i
+		def os_is_windows?; true; end
+	else
+		def os_is_windows?; false; end
+	end
+end
+#=====dpk=====
+
+# Win32(WIDE)との橋渡し用
+module Win32
+	WIDE = Encoding::UTF_16LE
+	WIDE_NUL = "\0".encode(WIDE).freeze
+	WIDE_SIZE = WIDE_NUL.bytesize
+	def self.wstr(size); WIDE_NUL * size; end
+	def self.to_wstr!(s); s ? s.encode!(WIDE).concat(WIDE_NUL) : nil; end
+	def self.to_wstr(s); s ? s.encode(WIDE).concat(WIDE_NUL) : nil; end
+	def self.from_wstr(s)
+		if s.respond_to?(:encode)
+			s = s.dup.force_encoding(WIDE)  if s.encoding != WIDE
+			return (i = s.index(WIDE_NUL)) ? s[0,i].encode! : s.encode
+		else
+			s = DL::CPtr.new(s)  if s.is_a?(Integer)
+			return nil  if s.null?
+			i = 0; i += 2  until s[i] == 0 && s[i+1] == 0
+			return s.to_s(i).force_encoding(WIDE).encode!
+		end
+	end
+end
+
+# Ruby 2.0以降はFiddleを使う、Win32APIのようなもの
+module Win32; end
+if os_is_windows?
+	if RUBY_VERSION >= "2"
+		require 'fiddle/import'
+		class Win32::API
+			DLL = {}
+			if Fiddle::SIZEOF_VOIDP == Fiddle::SIZEOF_LONG_LONG
+				POINTER_TYPE = 'q*'
+				CALLTYPEMAP = {cdecl: Fiddle::Function::DEFAULT, stdcall: Fiddle::Function::DEFAULT}
+			else
+				POINTER_TYPE = 'l!*'
+				CALLTYPEMAP = {cdecl: Fiddle::Function::DEFAULT, stdcall: Fiddle::Function::STDCALL}
+			end
+
+			def typemap(t)
+				case t
+				 when /[PH]/i;	Fiddle::TYPE_VOIDP
+				 when /[NLI]/i;	Fiddle::TYPE_LONG
+				 when /[Q]/i;	Fiddle::TYPE_LONG_LONG
+				 else			Fiddle::TYPE_VOID
+				end
+			end
+			private :typemap
+
+			def initialize(dllname, func, import, export = nil, calltype = :stdcall)
+				@proto = [import].join.each_char.map { |v| typemap(v) }
+				handle = DLL[dllname] ||= Fiddle.dlopen(dllname)
+				@func = Fiddle::Function.new(handle[func], @proto, typemap(export),
+						Fiddle::Importer.const_get(:CALL_TYPE_TO_ABI)[calltype])
+			 rescue Fiddle::DLError => e
+				raise LoadError, e.message, e.backtrace
+			end
+
+			def call(*args)
+				args.each_with_index do |x, i|
+					case @proto[i]
+					 when Fiddle::TYPE_VOIDP
+						if x.nil? || x.is_a?(String)
+							args[i], = [x].pack("p").unpack(POINTER_TYPE)
+						else
+							args[i], = [x].pack("Q").unpack("q")
+						end
+					 when Fiddle::TYPE_LONG
+						args[i], = [x].pack("I").unpack("i")
+					 when Fiddle::TYPE_LONG_LONG
+						args[i], = [x].pack("Q").unpack("q")
+					end
+				end
+				ret, = @func.call(*args)
+				return ret || 0
+			end
+		end
+	else
+		require 'win32api'
+		class Win32::API < Win32API; end
+	end
+else
+	class Win32::API; end
+end
+
+class Win32::API
+	# def self.GetCommandLine
+	# 	@@GetCommandLineW ||= new("kernel32", "GetCommandLineW", nil, "p")
+	# 	Win32::from_wstr(@@GetCommandLineW.call)
+	# end
+
+	# def self.GetLastError
+	# 	@@GetLastError ||= new("kernel32", "GetLastError", "", "i")
+	# 	return @@GetLastError.call
+	# end
+
+	# WAIT_TIMEOUT = 0x102
+	# def self.WaitForSingleObject(handle, milliseconds = -1)
+	# 	@@WaitForSingleObject ||= new("kernel32", "WaitForSingleObject", "hi", "i")
+	# 	return @@WaitForSingleObject.call(handle, milliseconds)
+	# end
+
+	def self.CreateProcess(cmdline)
+		@@CreateProcess ||= new("kernel32", "CreateProcessW", "ppppiipppp", "i")
+		# STARTUPINFO
+	 	si = [0, nil, nil ,nil, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, nil, 0, 0, 0]
+		si[0] = si.pack("Lp3L8S2PL3").bytesize
+		si = si.pack("Lp3L8S2PL3")
+		# PROCESS_INFORMATION
+		pi = [0, 0, 0, 0].pack("QQLL")
+		r = @@CreateProcess.call(nil, Win32::to_wstr(cmdline), nil, nil, 0, 0, nil, nil, si, pi)
+		fail  if r == 0
+		pi = pi.unpack("QQLL")
+		return { hProcess:pi[0], hThread:pi[1], dwProcessId:pi[2], dwThreadId:pi[3] }
+	end
+
+	def self.CloseHandle(object)
+		@@CloseHandle ||= new("kernel32", "CloseHandle", "h", "i")
+		r = @@CloseHandle.call(object)
+		fail  if r == 0
+	end
+
+	TH32CS_SNAPPROCESS = 0x2
+	INVALID_HANDLE_VALUE = -1
+	def self.CreateToolhelp32Snapshot(flags, pid = 0)
+		@@CreateToolhelp32Snapshot ||= new("kernel32", "CreateToolhelp32Snapshot", "ii", "h")
+		return @@CreateToolhelp32Snapshot.call(flags, pid)
+	end
+
+	MAX_PATH = 260
+	def self.Process32Next(handle)
+		@@Process32Next ||= new("kernel32", "Process32NextW", "hp", "i")
+		# PROCESSENTRY32
+		pe = [0, 0, 0, 0, nil, 0, 0, 0, 0, 0, Win32::wstr(MAX_PATH+2)]
+		pe[0] = pe.pack("LLLLP4LLLLLa*").bytesize
+		pe = pe.pack("LLLLP4LLLLLa*")
+		r = @@Process32Next.call(handle, pe)
+		if r != 0
+			pe = pe.unpack("LLLLP4LLLLLa*")
+			return {
+				usage: pe[1],
+				pid: pe[2],
+				hid: pe[4],
+				mid: pe[5],
+				threads: pe[6],
+				ppid: pe[7],
+				priclassbase: pe[8],
+				flags: pe[9],
+				exefile: Win32::from_wstr(pe[10]),
+			}
+		else
+			return nil
+		end
+	end
+end
+
+def system_wait_descendant(cmdline)
+	# system(cmdline)
+
+	pi = Win32::API::CreateProcess(cmdline)
+	Win32::API::CloseHandle(pi[:hThread])
+
+	descendants = {}
+	descendants[pi[:dwProcessId]] = { pid:pi[:dwProcessId], live:true }
+
+	while !descendants.empty?
+		descendants.each { |pid, desc| desc[:live] = nil }
+
+		snapshot = Win32::API::CreateToolhelp32Snapshot(Win32::API::TH32CS_SNAPPROCESS)
+		while (pe = Win32::API::Process32Next(snapshot))
+			sn_pid = pe[:pid]
+			sn_ppid = pe[:ppid]
+
+			if descendants.has_key?(sn_pid)
+				descendants[sn_pid][:live] = true
+			end
+
+			if descendants.has_key?(sn_ppid)
+				descendants[sn_pid] = { pid:sn_pid, live:true }
+			end
+		end
+		Win32::API::CloseHandle(snapshot)
+
+		descendants.delete_if { |pid, desc| !desc[:live] }
+
+		sleep(0.555)
+	end
+
+	Win32::API::CloseHandle(pi[:hProcess])
+end
+
+def run_retroarch(core_base, rom_filename)
+	# cmdline = File.join(File.dirname($0), "notepad.bat")
+
+	cmdline = "retroarch " +
+		"-L \"c:/tools/retroarch/cores/#{core_base}.dll\" " +
+		"\"#{rom_filename}\""
+
+	$log.printf("exec : %s\n", cmdline)
+	system_wait_descendant(cmdline)
+end
+
+def main(args)
+	$log = File.open($0 + ".log", "wt:UTF-8")
+	$log.print("runcommand start\n");
+
+	if args.size < 4
+		$log.print("Missing arguments\n")
+		fail "Missing arguments"
+	end
+
+	# video_mode = args[0]
+	# $log.print("video_mode = #{video_mode}\n")
+	# sys_port = args[1]
+	# $log.print("sys_port = #{sys_port}\n")
+	system = args[2]
+	$log.print("system = #{system}\n")
+	rom = args[3]
+	$log.print("rom = #{rom}\n")
+
+	case system
+	when "arcade"
+		run_retroarch("mame2010_libretro", rom)
+	when "coleco"
+		run_retroarch("bluemsx_libretro", rom)
+	when "dreamcast"
+		run_retroarch("flycast_libretro", rom)
+	when "fds"
+		run_retroarch("nestopia_libretro", rom)
+	when "gameandwatch"
+		run_retroarch("gw_libretro", rom)
+	when "gamegear"
+		run_retroarch("genesis_plus_gx_libretro", rom)
+	when "gb"
+		run_retroarch("mgba_libretro", rom)
+	when "gba"
+		run_retroarch("mgba_libretro", rom)
+	when "gbc"
+		run_retroarch("mgba_libretro", rom)
+	when "mame-libretro"
+		run_retroarch("mame2010_libretro", rom)
+	when "mastersystem"
+		run_retroarch("genesis_plus_gx_libretro", rom)
+	when "megadrive"
+		run_retroarch("genesis_plus_gx_libretro", rom)
+	when "msx"
+		run_retroarch("bluemsx_libretro", rom)
+	when "n64"
+		run_retroarch("mupen64plus_next_libretro", rom)
+	when "nds"
+		run_retroarch("desmume_libretro", rom)
+	when "nes"
+		run_retroarch("nestopia_libretro", rom)
+	when "pc98"
+		run_retroarch("np2kai_libretro", rom)
+	when "pcengine"
+		run_retroarch("mednafen_pce_fast_libretro", rom)
+	when "psp"
+		run_retroarch("ppsspp_libretro", rom)
+	when "psx"
+		run_retroarch("pcsx_rearmed_libretro", rom)
+	when "saturn"
+		run_retroarch("yabause_libretro", rom)
+	when "segacd"
+		run_retroarch("genesis_plus_gx_libretro", rom)
+	when "sg-1000"
+		run_retroarch("genesis_plus_gx_libretro", rom)
+	when "snes"
+		run_retroarch("snes9x2010_libretro", rom)
+	when "vectrex"
+		run_retroarch("vecx_libretro", rom)
+	when "x68000"
+		run_retroarch("px68k_libretro", rom)
+	else
+		$log.print("Unknown system\n")
+		fail "Unknown system"
+	end
+
+	$log.print("runcommand end\n");
+	$log.close
+
+	return 0
+end
+
+exit main(ARGV)
