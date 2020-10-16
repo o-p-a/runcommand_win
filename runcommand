@@ -8,7 +8,7 @@
 #----------------------------------------------------------------
 
 ProgName = "runcommand"
-Version = "0.03"
+Version = "0.04"
 #=====dpk===== Copyright2020
 Copyright = "Copyright (c) 2020 by opa"
 #=====dpk=====
@@ -18,35 +18,6 @@ require 'pathname'
 RETROARCH_HOME = "c:/tools/retroarch"
 PIECONFIG_HOME = File.expand_path("~/RetroPie-Config")
 CONFIG_DIR = File.join(PIECONFIG_HOME, "configs")
-
-SYSTEM_CORE_MAP = {
-	"arcade" =>			"mame2010",
-	"coleco" =>			"bluemsx",
-	"dreamcast" =>		"flycast",
-	"fds" =>			"nestopia",
-	"gameandwatch" =>	"gw",
-	"gamegear" =>		"genesis_plus_gx",
-	"gb" =>				"mgba",
-	"gba" =>			"mgba",
-	"gbc" =>			"mgba",
-	"mame-libretro" =>	"mame2010",
-	"mastersystem" =>	"genesis_plus_gx",
-	"megadrive" =>		"genesis_plus_gx",
-	"msx" =>			"bluemsx",
-	"n64" =>			"mupen64plus_next",
-	"nds" =>			"desmume",
-	"nes" =>			"nestopia",
-	"pc98" =>			"np2kai",
-	"pcengine" =>		"mednafen_pce_fast",
-	"psp" =>			"ppsspp",
-	"psx" =>			"pcsx_rearmed",
-	"saturn" =>			"yabause",
-	"segacd" =>			"genesis_plus_gx",
-	"sg-1000" =>		"genesis_plus_gx",
-	"snes" =>			"snes9x2010",
-	"vectrex" =>		"vecx",
-	"x68000" =>			"px68k",
-}
 
 #=====dpk===== os_is_windows?
 # Windows環境下かどうか判定する
@@ -59,6 +30,10 @@ module Kernel
 	end
 end
 #=====dpk=====
+
+def relpath(path, from_dir)
+	return Pathname(path).relative_path_from(Pathname(from_dir)).to_s
+end
 
 # Win32(WIDE)との橋渡し用
 module Win32
@@ -212,6 +187,7 @@ class Win32::API
 	end
 end
 
+# 子孫が死に絶えるまで待つsystem()
 def system_wait_descendant(cmdline)
 	# system(cmdline)
 
@@ -247,12 +223,7 @@ def system_wait_descendant(cmdline)
 	Win32::API::CloseHandle(pi[:hProcess])
 end
 
-def relpath(path, from_dir)
-	return Pathname(path).relative_path_from(Pathname(from_dir)).to_s
-end
-
 def make_system_config_file(system_name)
-
 	savedir = File.join($system_config_dir, "saves")
 	if !File.exist?(savedir)
 		Dir.mkdir(savedir)
@@ -267,7 +238,9 @@ def make_system_config_file(system_name)
 		ofile.puts("")
 
 		ofile.puts(%[input_remapping_directory = "~/RetroPie-Config/configs/#{system_name}"])
-		# ofile.puts(%[keyboard_gamepad_enable = "true"])
+		if ["msx", "pc98", "x68000"].include?(system_name)
+			ofile.puts(%[keyboard_gamepad_enable = "false"])
+		end
 		ofile.puts(%[rgui_config_directory = "~/RetroPie-Config/configs/#{system_name}"])
 		ofile.puts(%[savefile_directory = "~/RetroPie-Config/configs/#{system_name}/saves"])
 		ofile.puts(%[savestate_directory = "~/RetroPie-Config/configs/#{system_name}/states"])
@@ -277,54 +250,118 @@ def make_system_config_file(system_name)
 	end
 end
 
-def run_retroarch(system_name, core_basename, rom_filename, use_keyboard:false)
-	$exe_filename = File.join(RETROARCH_HOME, "retroarch.exe")
-	$core_filename = File.join(RETROARCH_HOME, "cores", core_basename + "_libretro.dll")
-	$all_config_dir = File.join(CONFIG_DIR, "all")
+def run_retroarch(system_name, emulator_name, rom_filename)
+	core_map = {
+		"lr-beetle-pce-fast" =>	"mednafen_pce_fast",
+		"lr-mupen64plus" =>		"mupen64plus_next",
+		"lr-np2kai-ex" =>		"np2kai",
+	}
+
+	exe_filename = File.join(RETROARCH_HOME, "retroarch.exe")
 	$all_config_filename = File.join($all_config_dir, "retroarch.cfg")
 	$kbd_config_filename = File.join($all_config_dir, "retroarch_kbd.cfg")
-	$system_config_dir = File.join(CONFIG_DIR, system_name)
 	$system_config_filename = File.join($system_config_dir, "retroarch.cfg")
-	$rom_filename = rom_filename
+
+	if core_map[emulator_name]
+		core_name = core_map[emulator_name]
+	else
+		core_name = emulator_name.gsub(/^lr-/, "")	# 先頭の lr- を取る
+		core_name = core_name.gsub("-", "_")		# - を _ に置き換える
+	end
+	core_name += "_libretro.dll"
+	$log.print("Core name: #{core_name}\n")
+	core_filename = File.join(RETROARCH_HOME, "cores", core_name)
 
 	make_system_config_file(system_name)
 
-	cmd = [$exe_filename]
-	cmd += ["--libretro", $core_filename]
+	cmd = [exe_filename]
+	cmd += ["--libretro", core_filename]
 	cmd += ["--config", $system_config_filename]
-	cmd += [$rom_filename]
+	cmd += [rom_filename]
 
 	cmd = cmd.map{ |t| t =~ /\s/ ? "\"#{t}\"" : t }.join(" ")
-	$log.printf("exec : %s\n", cmd)
+	$log.printf("Exec: %s\n", cmd)
+	$log.flush
 	system_wait_descendant(cmd)
 end
 
+def determine_emulator(system_name, rom_basename)
+	emulators_cfg_filename = File.join($all_config_dir, "emulators.cfg")
+	if File.readable?(emulators_cfg_filename)
+		File.open(emulators_cfg_filename, "rt:UTF-8") do |file|
+			file.each_line do |aline|
+				aline.chomp!
+				if aline =~ /^\s*([^\s_]+)_([^\s]+)\s*=\s*([^\s]+)\s*$/
+					e_system, e_rom, e_emulator = $1, $2, $3
+					if e_emulator =~ /^"(.*)"$/
+						e_emulator = $1
+					end
+
+					if e_system == system_name && e_rom == rom_basename
+						return e_emulator
+					end
+				end
+			end
+		end
+	end
+
+	emulators_cfg_filename = File.join($system_config_dir, "emulators.cfg")
+	if File.readable?(emulators_cfg_filename)
+		File.open(emulators_cfg_filename, "rt:UTF-8") do |file|
+			file.each_line do |aline|
+				aline.chomp!
+				if aline =~ /^\s*default\s*=\s*([^\s]+)\s*$/
+					e_emulator = $1
+					if e_emulator =~ /^"(.*)"$/
+						e_emulator = $1
+					end
+					return e_emulator
+				end
+			end
+		end
+	end
+
+	return "(#{system_name})"
+end
+
+def run_command(system_name, rom_filename)
+	$all_config_dir = File.join(CONFIG_DIR, "all")
+	$system_config_dir = File.join(CONFIG_DIR, system_name)
+
+	emulator_name = determine_emulator(system_name, File.basename(rom_filename, ".*"))
+	$log.print("Emulator core: #{emulator_name}\n")
+
+	case emulator_name
+	when /^lr-/
+		$log.print("Emulator engine: RetroArch\n")
+		run_retroarch(system_name, emulator_name, rom_filename)
+	else
+		$log.print("Unknown emulator: #{emulator_name}\n")
+		fail "Unknown emulator"
+	end
+end
+
 def main(args)
-	$log = File.open($0 + ".log", "wt:UTF-8")
-	$log.print("runcommand start\n");
+	$log = File.open($0 + ".log", "wb:UTF-8")
+	$log.print("RunCommand.exe: start\n");
 
 	if args.size < 4
-		$log.print("Missing arguments\n")
-		fail "Missing arguments"
+		$log.print("Missing arguments (4 arguments required)\n")
+		fail "Missing arguments (4 arguments required)"
 	end
 
 	# video_mode = args[0]
 	# $log.print("video_mode = #{video_mode}\n")
 	# sys_port = args[1]
 	# $log.print("sys_port = #{sys_port}\n")
-	system = args[2]
-	$log.print("system = #{system}\n")
-	rom = args[3]
-	$log.print("rom = #{rom}\n")
+	system_name = args[2]
+	$log.print("System: #{system_name}\n")
+	rom_filename = args[3]
+	$log.print("Rom: #{rom_filename}\n")
 
-	if SYSTEM_CORE_MAP[system]
-		run_retroarch(system, SYSTEM_CORE_MAP[system], rom)
-	else
-		$log.print("Unknown system\n")
-		fail "Unknown system"
-	end
+	run_command(system_name, rom_filename)
 
-	$log.print("runcommand end\n");
+	$log.print("RunCommand.exe: end\n");
 	$log.close
 
 	return 0
