@@ -8,7 +8,7 @@
 #----------------------------------------------------------------
 
 ProgName = "runcommand"
-Version = "0.04"
+Version = "0.05"
 #=====dpk===== Copyright2020
 Copyright = "Copyright (c) 2020 by opa"
 #=====dpk=====
@@ -238,15 +238,16 @@ def make_system_config_file(system_name)
 		ofile.puts("")
 
 		ofile.puts(%[input_remapping_directory = "~/RetroPie-Config/configs/#{system_name}"])
-		if ["msx", "pc98", "x68000"].include?(system_name)
-			ofile.puts(%[keyboard_gamepad_enable = "false"])
-		end
 		ofile.puts(%[rgui_config_directory = "~/RetroPie-Config/configs/#{system_name}"])
 		ofile.puts(%[savefile_directory = "~/RetroPie-Config/configs/#{system_name}/saves"])
 		ofile.puts(%[savestate_directory = "~/RetroPie-Config/configs/#{system_name}/states"])
 
 		ofile.puts("")
-		ofile.puts(%[#include "#{relpath($all_config_filename, $system_config_dir)}"])
+		if ["msx", "pc98", "x68000"].include?(system_name)
+			ofile.puts(%[#include "#{relpath($kbd_config_filename, $system_config_dir)}"])
+		else
+			ofile.puts(%[#include "#{relpath($all_config_filename, $system_config_dir)}"])
+		end
 	end
 end
 
