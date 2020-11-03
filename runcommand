@@ -8,7 +8,7 @@
 #----------------------------------------------------------------
 
 ProgName = "runcommand"
-Version = "0.05"
+Version = "0.06"
 #=====dpk===== Copyright2020
 Copyright = "Copyright (c) 2020 by opa"
 #=====dpk=====
@@ -188,7 +188,7 @@ class Win32::API
 end
 
 # 子孫が死に絶えるまで待つsystem()
-def system_wait_descendant(cmdline)
+def _system_wait_descendant(cmdline)
 	# system(cmdline)
 
 	pi = Win32::API::CreateProcess(cmdline)
@@ -221,6 +221,15 @@ def system_wait_descendant(cmdline)
 	end
 
 	Win32::API::CloseHandle(pi[:hProcess])
+end
+
+def system_wait_descendant(*cmd)
+	cmd = cmd.map{ |t| t =~ /\s/ ? "\"#{t}\"" : t }.join(" ")
+
+	$log.printf("Exec: %s\n", cmd)
+	$log.flush
+
+	_system_wait_descendant(cmd)
 end
 
 def make_system_config_file(system_name)
@@ -280,10 +289,17 @@ def run_retroarch(system_name, emulator_name, rom_filename)
 	cmd += ["--config", $system_config_filename]
 	cmd += [rom_filename]
 
-	cmd = cmd.map{ |t| t =~ /\s/ ? "\"#{t}\"" : t }.join(" ")
-	$log.printf("Exec: %s\n", cmd)
-	$log.flush
-	system_wait_descendant(cmd)
+	system_wait_descendant(*cmd)
+end
+
+def run_retroarch_plain
+	exe_filename = File.join(RETROARCH_HOME, "retroarch.exe")
+	$all_config_filename = File.join($all_config_dir, "retroarch.cfg")
+
+	cmd = [exe_filename]
+	cmd += ["--config", $all_config_filename]
+
+	system_wait_descendant(*cmd)
 end
 
 def determine_emulator(system_name, rom_basename)
@@ -326,41 +342,59 @@ def determine_emulator(system_name, rom_basename)
 end
 
 def run_command(system_name, rom_filename)
-	$all_config_dir = File.join(CONFIG_DIR, "all")
 	$system_config_dir = File.join(CONFIG_DIR, system_name)
 
 	emulator_name = determine_emulator(system_name, File.basename(rom_filename, ".*"))
-	$log.print("Emulator core: #{emulator_name}\n")
+	$log.print("Emulator: #{emulator_name}\n")
 
 	case emulator_name
 	when /^lr-/
-		$log.print("Emulator engine: RetroArch\n")
+		$log.print("Launch via RetroArch\n")
 		run_retroarch(system_name, emulator_name, rom_filename)
 	else
-		$log.print("Unknown emulator: #{emulator_name}\n")
-		fail "Unknown emulator"
+		msg = "Unknown emulator: #{emulator_name}"
+		$log.puts(msg)
+		fail msg
 	end
 end
 
-def main(args)
+def var_init
+	$all_config_dir = File.join(CONFIG_DIR, "all")
 	$log = File.open($0 + ".log", "wb:UTF-8")
+end
+
+def main(args)
+	var_init
+
 	$log.print("RunCommand.exe: start\n");
 
-	if args.size < 4
-		$log.print("Missing arguments (4 arguments required)\n")
-		fail "Missing arguments (4 arguments required)"
+	case args.size
+	when 1
+		emulator_name = args[0]
+		case emulator_name
+		when "retroarch"
+			run_retroarch_plain
+		else
+			msg = "Unknown emulator: #{emulator_name}"
+			$log.puts(msg)
+			fail msg
+		end
+	when 4
+		# video_mode = args[0]
+		# $log.print("video_mode = #{video_mode}\n")
+		# sys_port = args[1]
+		# $log.print("sys_port = #{sys_port}\n")
+		system_name = args[2]
+		$log.print("System: #{system_name}\n")
+		rom_filename = args[3]
+		$log.print("Rom: #{rom_filename}\n")
+
+		run_command(system_name, rom_filename)
+	else
+		msg = "Missing arguments (1 or 4 arguments required)"
+		$log.puts(msg)
+		fail msg
 	end
-
-	# video_mode = args[0]
-	# $log.print("video_mode = #{video_mode}\n")
-	# sys_port = args[1]
-	# $log.print("sys_port = #{sys_port}\n")
-	system_name = args[2]
-	$log.print("System: #{system_name}\n")
-	rom_filename = args[3]
-	$log.print("Rom: #{rom_filename}\n")
-
-	run_command(system_name, rom_filename)
 
 	$log.print("RunCommand.exe: end\n");
 	$log.close
