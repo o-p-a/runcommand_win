@@ -8,12 +8,13 @@
 #----------------------------------------------------------------
 
 ProgName = "runcommand"
-Version = "0.06"
+Version = "0.08"
 #=====dpk===== Copyright2020
-Copyright = "Copyright (c) 2020 by opa"
+Copyright = "Copyright (c) 2020,2021 by opa"
 #=====dpk=====
 
 require 'pathname'
+require 'tempfile'
 
 RETROARCH_HOME = "c:/tools/RetroArch-Win64"
 PIECONFIG_HOME = File.expand_path("~/RetroPie-Config")
@@ -270,9 +271,8 @@ def run_retroarch(system_name, emulator_name, rom_filename)
 	exe_filename = File.join(RETROARCH_HOME, "retroarch.exe")
 	$all_config_filename = File.join($all_config_dir, "retroarch.cfg")
 	$kbd_config_filename = File.join($all_config_dir, "retroarch_kbd.cfg")
-	$log_config_filename = File.join($all_config_dir, "retroarch_log.cfg")
-
 	$system_config_filename = File.join($system_config_dir, "retroarch.cfg")
+	tmpconf = nil
 
 	if core_map[emulator_name]
 		core_name = core_map[emulator_name]
@@ -290,8 +290,16 @@ def run_retroarch(system_name, emulator_name, rom_filename)
 	cmd += ["--libretro", core_filename]
 	cmd += ["--config", $system_config_filename]
 	if $retrolog
+		tmpconf = Tempfile.new(["retroarch_log", ".cfg"])
+		tmpconf.puts('frontend_log_level = "0"');
+		tmpconf.puts('libretro_log_level = "0"');
+		tmpconf.puts('log_to_file = "true"');
+		tmpconf.puts('log_to_file_timestamp = "true"');
+		tmpconf.puts('log_verbosity = "true"');
+		tmpconf.flush
+
 		cmd += ["--verbose"]
-		cmd += ["--appendconfig", $log_config_filename]
+		cmd += ["--appendconfig", tmpconf.path]
 	end
 	cmd += [rom_filename]
 
@@ -357,6 +365,9 @@ def run_command(system_name, rom_filename)
 	when /^lr-/
 		$log.print("Launch via RetroArch\n")
 		run_retroarch(system_name, emulator_name, rom_filename)
+	when "drastic"
+		$log.print("Launch via RetroArch(DraStic => DeSmuME)\n")
+		run_retroarch(system_name, "lr-desmume", rom_filename)
 	else
 		msg = "Unknown emulator: #{emulator_name}"
 		$log.puts(msg)
@@ -367,7 +378,11 @@ end
 def var_init
 	$all_config_dir = File.join(CONFIG_DIR, "all")
 	$log = File.open($0 + ".log", "wb:UTF-8")
-	$retrolog = false
+	if File.exist?(File.join(File.dirname($0), "retrolog"))
+		$retrolog = true
+	else
+		$retrolog = false
+	end
 end
 
 def main(args)
