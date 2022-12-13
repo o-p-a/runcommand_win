@@ -8,7 +8,7 @@
 #----------------------------------------------------------------
 
 ProgName = "runcommand"
-Version = "0.09"
+Version = "1.01"
 #=====dpk===== Copyright2020
 Copyright = "Copyright (c) 2020-2022 by opa"
 #=====dpk=====
@@ -16,6 +16,8 @@ Copyright = "Copyright (c) 2020-2022 by opa"
 require 'pathname'
 require 'tempfile'
 require 'logger'
+require 'rexml/document'
+require 'fileutils'
 
 RETROPIE_CONFIG = File.expand_path("~/RetroPie-Config")
 CONFIG_DIR = File.join(RETROPIE_CONFIG, "configs")
@@ -119,11 +121,28 @@ if os_is_windows?
 		require 'win32api'
 		class Win32::API < Win32API; end
 	end
+
+	module Win32
+		if Fiddle::SIZEOF_VOIDP == Fiddle::SIZEOF_LONG_LONG
+			PROCESSOR_ARCHITECTURE = :AMD64
+		else
+			PROCESSOR_ARCHITECTURE = :x86
+		end
+	end
 else
 	class Win32::API; end
 end
 
 class Win32::API
+	# Win64では、ポインタとハンドルは64bit
+	class Struct
+		AMD64 = (Win32::PROCESSOR_ARCHITECTURE == :AMD64)
+
+		STARTUPINFO = AMD64 ? "Lx4p3L8S2x4PQ3" : "Lp3L8S2PL3"
+		PROCESS_INFORMATION = AMD64 ? "Q2L2" : "L4"
+		PROCESSENTRY32 = AMD64 ? "LLLx4PLLLlLa*" : "LLLPLLLlLa*"
+	end
+
 	# def self.GetCommandLine
 	# 	@@GetCommandLineW ||= new("kernel32", "GetCommandLineW", nil, "p")
 	# 	Win32::from_wstr(@@GetCommandLineW.call)
@@ -135,58 +154,58 @@ class Win32::API
 	# end
 
 	# WAIT_TIMEOUT = 0x102
-	# def self.WaitForSingleObject(handle, milliseconds = -1)
+	# def self.WaitForSingleObject(hHandle, dwMilliseconds = -1)
 	# 	@@WaitForSingleObject ||= new("kernel32", "WaitForSingleObject", "hi", "i")
-	# 	return @@WaitForSingleObject.call(handle, milliseconds)
+	# 	return @@WaitForSingleObject.call(hHandle, dwMilliseconds)
 	# end
 
-	def self.CreateProcess(cmdline)
+	def self.CreateProcess(lpCommandLine, wShowWindow:nil)
 		@@CreateProcess ||= new("kernel32", "CreateProcessW", "ppppiipppp", "i")
-		# STARTUPINFO
-	 	si = [0, nil, nil ,nil, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, nil, 0, 0, 0]
-		si[0] = si.pack("Lp3L8S2PL3").bytesize
-		si = si.pack("Lp3L8S2PL3")
-		# PROCESS_INFORMATION
-		pi = [0, 0, 0, 0].pack("QQLL")
-		r = @@CreateProcess.call(nil, Win32::to_wstr(cmdline), nil, nil, 0, 0, nil, nil, si, pi)
+		si = [0, nil, nil ,nil, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, nil, 0, 0, 0]
+		if wShowWindow
+			si[11] |= 1
+			si[12] = wShowWindow
+		end
+		si[0] = si.pack(Struct::STARTUPINFO).bytesize
+		si = si.pack(Struct::STARTUPINFO)
+		pi = [0, 0, 0, 0].pack(Struct::PROCESS_INFORMATION)
+		r = @@CreateProcess.call(nil, Win32::to_wstr(lpCommandLine), nil, nil, 0, 0, nil, nil, si, pi)
 		fail  if r == 0
-		pi = pi.unpack("QQLL")
+		pi = pi.unpack(Struct::PROCESS_INFORMATION)
 		return { hProcess:pi[0], hThread:pi[1], dwProcessId:pi[2], dwThreadId:pi[3] }
 	end
 
-	def self.CloseHandle(object)
+	def self.CloseHandle(hObject)
 		@@CloseHandle ||= new("kernel32", "CloseHandle", "h", "i")
-		r = @@CloseHandle.call(object)
+		r = @@CloseHandle.call(hObject)
 		fail  if r == 0
 	end
 
 	TH32CS_SNAPPROCESS = 0x2
-	INVALID_HANDLE_VALUE = -1
-	def self.CreateToolhelp32Snapshot(flags, pid = 0)
+	def self.CreateToolhelp32Snapshot(dwFlags, th32ProcessID = 0)
 		@@CreateToolhelp32Snapshot ||= new("kernel32", "CreateToolhelp32Snapshot", "ii", "h")
-		return @@CreateToolhelp32Snapshot.call(flags, pid)
+		return @@CreateToolhelp32Snapshot.call(dwFlags, th32ProcessID)
 	end
 
 	MAX_PATH = 260
-	def self.Process32Next(handle)
+	def self.Process32Next(hSnapshot)
 		@@Process32Next ||= new("kernel32", "Process32NextW", "hp", "i")
-		# PROCESSENTRY32
-		pe = [0, 0, 0, 0, nil, 0, 0, 0, 0, 0, Win32::wstr(MAX_PATH+2)]
-		pe[0] = pe.pack("LLLLP4LLLLLa*").bytesize
-		pe = pe.pack("LLLLP4LLLLLa*")
-		r = @@Process32Next.call(handle, pe)
+		pe = [0, 0, 0, nil, 0, 0, 0, 0, 0, Win32::wstr(MAX_PATH+2)]
+		pe[0] = pe.pack(Struct::PROCESSENTRY32).bytesize
+		pe = pe.pack(Struct::PROCESSENTRY32)
+		r = @@Process32Next.call(hSnapshot, pe)
 		if r != 0
-			pe = pe.unpack("LLLLP4LLLLLa*")
+			pe = pe.unpack(Struct::PROCESSENTRY32)
 			return {
-				usage: pe[1],
-				pid: pe[2],
-				hid: pe[4],
-				mid: pe[5],
-				threads: pe[6],
-				ppid: pe[7],
-				priclassbase: pe[8],
-				flags: pe[9],
-				exefile: Win32::from_wstr(pe[10]),
+				# cntUsage: pe[1],
+				th32ProcessID: pe[2],
+				# th32DefaultHeapID: pe[3],
+				# th32ModuleID: pe[4],
+				cntThreads: pe[5],
+				th32ParentProcessID: pe[6],
+				pcPriClassBase: pe[7],
+				# dwFlags: pe[8],
+				szExeFile: Win32::from_wstr(pe[9]),
 			}
 		else
 			return nil
@@ -195,43 +214,46 @@ class Win32::API
 end
 
 # 子孫が死に絶えるまで待つsystem()
-def system_wait_descendant(cmdline)
-	pi = Win32::API::CreateProcess(cmdline)
+def system_wait_descendant(cmdline, wShowWindow:nil)
+	pi = Win32::API::CreateProcess(cmdline, wShowWindow:wShowWindow)
+	Win32::API::CloseHandle(pi[:hProcess])
 	Win32::API::CloseHandle(pi[:hThread])
-
-	descendants = {}
-	descendants[pi[:dwProcessId]] = { pid:pi[:dwProcessId], live:true }
+	descendants = { pi[:dwProcessId] => true }
+	sleep_pediod = 0.025
 
 	while !descendants.empty?
-		descendants.each { |pid, desc| desc[:live] = nil }
+		descendants.each_key { |pid| descendants[pid] = false }
 
 		snapshot = Win32::API::CreateToolhelp32Snapshot(Win32::API::TH32CS_SNAPPROCESS)
 		while (pe = Win32::API::Process32Next(snapshot))
-			sn_pid = pe[:pid]
-			sn_ppid = pe[:ppid]
+			sn_pid = pe[:th32ProcessID]
+			sn_ppid = pe[:th32ParentProcessID]
 
 			if descendants.has_key?(sn_pid)
-				descendants[sn_pid][:live] = true
+				descendants[sn_pid] = true
 			end
 
 			if descendants.has_key?(sn_ppid)
-				descendants[sn_pid] = { pid:sn_pid, live:true }
+				descendants[sn_pid] = true
 			end
 		end
 		Win32::API::CloseHandle(snapshot)
 
-		descendants.delete_if { |pid, desc| !desc[:live] }
+		descendants.delete_if { |pid, live| !live }
 
-		sleep(0.555)
+		sleep(sleep_pediod)
+		sleep_pediod += 0.025  if sleep_pediod < 0.5
 	end
-
-	Win32::API::CloseHandle(pi[:hProcess])
 end
 
-def exec_command_wait(*cmd)
-	cmd = cmd.map{ |t| t =~ /\s/ ? "\"#{t}\"" : t }.join(" ")
+def Win32_cmdshell_escape(*cmd)
+	return cmd.map{ |t| t =~ /\s/ ? "\"#{t}\"" : t }.join(" ")
+end
+
+def win32_system(*cmd)
+	cmd = Win32_cmdshell_escape(*cmd)
 	$log.info { "Exec: #{cmd}" }
-	system_wait_descendant(cmd)
+	system_wait_descendant(cmd, wShowWindow:0)
 end
 
 def get_retroarch_home
@@ -314,6 +336,85 @@ def create_system_config_file
 	end
 end
 
+def patch_retroarch_manifest
+	exe_name = retroarch_exename
+	orig_name = exe_name + ".orig"
+	mt = File.join(RETROPIE_CONFIG, "etc", "mt.exe")
+
+	fail "mt.exe not found: #{mt}"  if !File.executable?(mt)
+	fail "RetroArch is not executable: #{exe_name}"  if !File.executable?(exe_name)
+
+	if File.exist?(orig_name)
+		exe_mtime = File.mtime(exe_name)
+		orig_mtime = File.mtime(orig_name)
+
+		if (exe_mtime - (orig_mtime + 60)).abs < 10
+			return # タイムスタンプ的にOKならショートカットリターン
+		end
+	end
+
+	temp = Tempfile.new(["retroarch", ".manifest"])
+	temp.close
+	cmd = [mt]
+	cmd += ["-nologo"]
+	cmd += ["-inputresource:#{exe_name}"]
+	cmd += ["-out:#{temp.path}"]
+	win32_system(*cmd)
+
+	manifest = REXML::Document.new(File.read(temp.path))
+	temp.close!
+
+	if manifest.elements["/assembly/application/windowsSettings/activeCodePage"]
+		return # 既にactiveCodePage要素があればリターン
+	end
+
+	$log.info { "Applying: UTF-8 activeCodePage manifest" }
+
+	if !manifest.xml_decl || manifest.xml_decl.to_s == ""
+		manifest << REXML::XMLDecl.new("1.0", "UTF-8", "yes")
+	end
+
+	if !manifest.elements["assembly"]
+		e = REXML::Element.new("assembly", manifest)
+		e.add_attribute("manifestVersion", "1.0")
+		e.add_namespace("urn:schemas-microsoft-com:asm.v1")
+	end
+	assembly = manifest.elements["assembly"]
+
+	if !assembly.elements["application"]
+		REXML::Element.new("application", assembly)
+	end
+	application = assembly.elements["application"]
+
+	if !application.elements["windowsSettings"]
+		REXML::Element.new("windowsSettings", application)
+	end
+	windowsSettings = application.elements["windowsSettings"]
+
+	if !windowsSettings.elements["activeCodePage"]
+		e = REXML::Element.new("activeCodePage", windowsSettings)
+		e.add_namespace("http://schemas.microsoft.com/SMI/2019/WindowsSettings")
+		e.text = "UTF-8"
+	end
+
+	temp = Tempfile.new(["retroarch", ".manifest"])
+	temp.puts(manifest.to_s)
+	temp.close
+	orig_mtime = File.mtime(exe_name)
+	FileUtils.cp(exe_name, orig_name, preserve:true)
+
+	cmd = [mt]
+	cmd += ["-nologo"]
+	cmd += ["-manifest", temp.path]
+	cmd += ["-outputresource:#{exe_name}"]
+	win32_system(*cmd)
+	temp.close!
+
+	File.utime(orig_mtime + 60, orig_mtime + 60, exe_name)
+
+	$log.info { "Applied: UTF-8 manifest" }
+end
+
 def run_retroarch(emulator_name, rom_filename)
 	core_map = {
 		"lr-beetle-pce-fast" =>	"mednafen_pce_fast",
@@ -332,6 +433,7 @@ def run_retroarch(emulator_name, rom_filename)
 
 	create_system_config_file
 
+	patch_retroarch_manifest
 	cmd = [retroarch_exename]
 	cmd += ["--libretro", File.join(retroarch_home, "cores", core_name)]
 	cmd += ["--config", system_config_filename]
@@ -348,14 +450,14 @@ def run_retroarch(emulator_name, rom_filename)
 		cmd += ["--appendconfig", tmpconf.path]
 	end
 	cmd += [rom_filename]
-
-	exec_command_wait(*cmd)
+	win32_system(*cmd)
 end
 
 def run_retroarch_plain
+	patch_retroarch_manifest
 	cmd = [retroarch_exename]
 	cmd += ["--config", system_config_filename]
-	exec_command_wait(*cmd)
+	win32_system(*cmd)
 end
 
 def determine_emulator_or_core(rom_filename)
