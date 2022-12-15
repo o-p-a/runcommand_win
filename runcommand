@@ -53,7 +53,7 @@ module Win32
 	def self.to_wstr!(s); s ? s.encode!(WIDE).concat(WIDE_NUL) : nil; end
 	def self.to_wstr(s); s ? s.encode(WIDE).concat(WIDE_NUL) : nil; end
 	def self.from_wstr(s)
-		if s.respond_to?(:encode)
+		if s.is_a?(String)
 			s = s.dup.force_encoding(WIDE)  if s.encoding != WIDE
 			return (i = s.index(WIDE_NUL)) ? s[0,i].encode! : s.encode
 		else
@@ -67,59 +67,44 @@ end
 
 # Ruby 2.0以降はFiddleを使う、Win32APIのようなもの
 if os_is_windows?
-	if RUBY_VERSION >= "2"
-		require 'fiddle/import'
-		class Win32::API
-			DLL = {}
-			if Fiddle::SIZEOF_VOIDP == Fiddle::SIZEOF_LONG_LONG
-				POINTER_TYPE = 'q*'
-				CALLTYPEMAP = {cdecl: Fiddle::Function::DEFAULT, stdcall: Fiddle::Function::DEFAULT}
-			else
-				POINTER_TYPE = 'l!*'
-				CALLTYPEMAP = {cdecl: Fiddle::Function::DEFAULT, stdcall: Fiddle::Function::STDCALL}
-			end
+	require 'fiddle/import'
+	class Win32::API
+		DLL = {}
 
-			def typemap(t)
-				case t
-				 when /[PH]/i;	Fiddle::TYPE_VOIDP
-				 when /[NLI]/i;	Fiddle::TYPE_LONG
-				 when /[Q]/i;	Fiddle::TYPE_LONG_LONG
-				 else			Fiddle::TYPE_VOID
-				end
-			end
-			private :typemap
-
-			def initialize(dllname, func, import, export = nil, calltype = :stdcall)
-				@proto = [import].join.each_char.map { |v| typemap(v) }
-				handle = DLL[dllname] ||= Fiddle.dlopen(dllname)
-				@func = Fiddle::Function.new(handle[func], @proto, typemap(export),
-						Fiddle::Importer.const_get(:CALL_TYPE_TO_ABI)[calltype])
-			 rescue Fiddle::DLError => e
-				raise LoadError, e.message, e.backtrace
-			end
-
-			def call(*args)
-				args.each_with_index do |x, i|
-					case @proto[i]
-					 when Fiddle::TYPE_VOIDP
-						if x.nil? || x.is_a?(String)
-							args[i], = [x].pack("p").unpack(POINTER_TYPE)
-						else
-							args[i], = [x].pack("Q").unpack("q")
-						end
-					 when Fiddle::TYPE_LONG
-						args[i], = [x].pack("I").unpack("i")
-					 when Fiddle::TYPE_LONG_LONG
-						args[i], = [x].pack("Q").unpack("q")
-					end
-				end
-				ret, = @func.call(*args)
-				return ret || 0
+		def typemap(t)
+			case t
+			when "V";			Fiddle::TYPE_VOID
+			when /^[PH]$/i;		Fiddle::TYPE_VOIDP
+			when /^[NLI]$/i;	Fiddle::TYPE_LONG
+			when /^Q$/i;		Fiddle::TYPE_LONG_LONG
+			else;				fail
 			end
 		end
-	else
-		require 'win32api'
-		class Win32::API < Win32API; end
+		private :typemap
+
+		def initialize(dllname, func, import, export = nil, calltype = :stdcall)
+			@import = [import].join.each_char.map { |v| typemap(v) }
+			handle = DLL[dllname] ||= Fiddle.dlopen(dllname)
+			@func = Fiddle::Function.new(handle[func], @import, typemap(export),
+					Fiddle::Importer.const_get(:CALL_TYPE_TO_ABI)[calltype])
+		rescue Fiddle::DLError => e
+			raise LoadError, e.message, e.backtrace
+		end
+
+		def call(*args)
+			args.each_with_index do |x, i|
+				case @import[i]
+				when Fiddle::TYPE_VOIDP
+					args[i], = [x].pack((x.nil? || x.is_a?(String)) ? "p" : "J").unpack("j")
+				when Fiddle::TYPE_LONG
+					args[i], = [x].pack("L").unpack("l")
+				when Fiddle::TYPE_LONG_LONG
+					args[i], = [x].pack("Q").unpack("q")
+				end
+			end
+			ret, = @func.call(*args)
+			return ret || 0
+		end
 	end
 
 	module Win32
@@ -144,24 +129,24 @@ class Win32::API
 	end
 
 	# def self.GetCommandLine
-	# 	@@GetCommandLineW ||= new("kernel32", "GetCommandLineW", nil, "p")
-	# 	Win32::from_wstr(@@GetCommandLineW.call)
+	# 	@@GetCommandLine ||= new("kernel32", "GetCommandLineW", nil, "P")
+	# 	return Win32::from_wstr(@@GetCommandLine.call)
 	# end
 
 	# def self.GetLastError
-	# 	@@GetLastError ||= new("kernel32", "GetLastError", "", "i")
+	# 	@@GetLastError ||= new("kernel32", "GetLastError", "", "I")
 	# 	return @@GetLastError.call
 	# end
 
 	# WAIT_TIMEOUT = 0x102
 	# def self.WaitForSingleObject(hHandle, dwMilliseconds = -1)
-	# 	@@WaitForSingleObject ||= new("kernel32", "WaitForSingleObject", "hi", "i")
+	# 	@@WaitForSingleObject ||= new("kernel32", "WaitForSingleObject", "HI", "U")
 	# 	return @@WaitForSingleObject.call(hHandle, dwMilliseconds)
 	# end
 
 	def self.CreateProcess(lpCommandLine, wShowWindow:nil)
-		@@CreateProcess ||= new("kernel32", "CreateProcessW", "ppppiipppp", "i")
-		si = [0, nil, nil ,nil, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, nil, 0, 0, 0]
+		@@CreateProcess ||= new("kernel32", "CreateProcessW", "PPPPIIPPPP", "I")
+		si = [0, nil, nil ,nil, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, nil, 0, 0, 0]
 		if wShowWindow
 			si[11] |= 1
 			si[12] = wShowWindow
@@ -176,68 +161,59 @@ class Win32::API
 	end
 
 	def self.CloseHandle(hObject)
-		@@CloseHandle ||= new("kernel32", "CloseHandle", "h", "i")
+		@@CloseHandle ||= new("kernel32", "CloseHandle", "H", "I")
 		r = @@CloseHandle.call(hObject)
 		fail  if r == 0
 	end
 
 	TH32CS_SNAPPROCESS = 0x2
 	def self.CreateToolhelp32Snapshot(dwFlags, th32ProcessID = 0)
-		@@CreateToolhelp32Snapshot ||= new("kernel32", "CreateToolhelp32Snapshot", "ii", "h")
+		@@CreateToolhelp32Snapshot ||= new("kernel32", "CreateToolhelp32Snapshot", "II", "H")
 		return @@CreateToolhelp32Snapshot.call(dwFlags, th32ProcessID)
 	end
 
 	MAX_PATH = 260
 	def self.Process32Next(hSnapshot)
-		@@Process32Next ||= new("kernel32", "Process32NextW", "hp", "i")
+		@@Process32Next ||= new("kernel32", "Process32NextW", "HP", "I")
 		pe = [0, 0, 0, nil, 0, 0, 0, 0, 0, Win32::wstr(MAX_PATH+2)]
 		pe[0] = pe.pack(Struct::PROCESSENTRY32).bytesize
 		pe = pe.pack(Struct::PROCESSENTRY32)
 		r = @@Process32Next.call(hSnapshot, pe)
-		if r != 0
-			pe = pe.unpack(Struct::PROCESSENTRY32)
-			return {
-				# cntUsage: pe[1],
-				th32ProcessID: pe[2],
-				# th32DefaultHeapID: pe[3],
-				# th32ModuleID: pe[4],
-				cntThreads: pe[5],
-				th32ParentProcessID: pe[6],
-				pcPriClassBase: pe[7],
-				# dwFlags: pe[8],
-				szExeFile: Win32::from_wstr(pe[9]),
-			}
-		else
-			return nil
-		end
+		return nil  if r == 0
+		pe = pe.unpack(Struct::PROCESSENTRY32)
+		return {
+			# cntUsage: pe[1],
+			th32ProcessID: pe[2],
+			# th32DefaultHeapID: pe[3],
+			# th32ModuleID: pe[4],
+			cntThreads: pe[5],
+			th32ParentProcessID: pe[6],
+			pcPriClassBase: pe[7],
+			# dwFlags: pe[8],
+			szExeFile: Win32::from_wstr(pe[9]),
+		}
 	end
 end
 
 # 子孫が死に絶えるまで待つsystem()
-def system_wait_descendant(cmdline, wShowWindow:nil)
-	pi = Win32::API::CreateProcess(cmdline, wShowWindow:wShowWindow)
-	Win32::API::CloseHandle(pi[:hProcess])
-	Win32::API::CloseHandle(pi[:hThread])
+def system_wait_descendant(lpCommandLine, wShowWindow:nil)
+	pi = Win32::API.CreateProcess(lpCommandLine, wShowWindow:wShowWindow)
+	Win32::API.CloseHandle(pi[:hProcess])
+	Win32::API.CloseHandle(pi[:hThread])
 	descendants = { pi[:dwProcessId] => true }
 	sleep_pediod = 0.025
 
 	while !descendants.empty?
 		descendants.each_key { |pid| descendants[pid] = false }
 
-		snapshot = Win32::API::CreateToolhelp32Snapshot(Win32::API::TH32CS_SNAPPROCESS)
-		while (pe = Win32::API::Process32Next(snapshot))
+		snapshot = Win32::API.CreateToolhelp32Snapshot(Win32::API::TH32CS_SNAPPROCESS)
+		while (pe = Win32::API.Process32Next(snapshot))
 			sn_pid = pe[:th32ProcessID]
 			sn_ppid = pe[:th32ParentProcessID]
-
-			if descendants.has_key?(sn_pid)
-				descendants[sn_pid] = true
-			end
-
-			if descendants.has_key?(sn_ppid)
-				descendants[sn_pid] = true
-			end
+			descendants[sn_pid] = true  if descendants.has_key?(sn_pid)
+			descendants[sn_pid] = true  if descendants.has_key?(sn_ppid)
 		end
-		Win32::API::CloseHandle(snapshot)
+		Win32::API.CloseHandle(snapshot)
 
 		descendants.delete_if { |pid, live| !live }
 
