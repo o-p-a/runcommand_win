@@ -1,0 +1,49 @@
+#! /usr/bin/ruby -E:UTF-8
+# -*- mode:Ruby; tab-width:4; coding:UTF-8; -*-
+# vi:set ft=ruby ts=4 fenc=UTF-8 :
+#----------------------------------------------------------------
+
+require 'rexml/document'
+require 'rexml/formatters/default'
+require 'rexml/formatters/pretty'
+require 'rexml/formatters/transitive'
+
+def main(args)
+
+	manifest = REXML::Document.new
+	manifest.context = { respect_whitespace: :all }
+	manifest << REXML::XMLDecl.new("1.0", "UTF-8", "yes")
+	manifest.add_text("\n")
+	e = REXML::Element.new("assembly", manifest)
+	e.add_attribute("manifestVersion", "1.0")
+	e.add_namespace("urn:schemas-microsoft-com:asm.v1")
+	assembly = manifest.elements["assembly"]
+	REXML::Element.new("application", assembly)
+	application = assembly.elements["application"]
+	REXML::Element.new("windowsSettings", application)
+	windowsSettings = application.elements["windowsSettings"]
+	e = REXML::Element.new("activeCodePage", windowsSettings)
+	e.add_namespace("http://schemas.microsoft.com/SMI/2019/WindowsSettings")
+	REXML::Text.new("UTF-8", true, e)
+
+	f = File.open("test.manifest", "wb:UTF-8")
+
+	manifest.write(f, 4)
+	f.puts(""); f.puts(""); f.puts("")
+
+	REXML::Formatters::Default.new.write(manifest, f)
+	f.puts(""); f.puts(""); f.puts("")
+
+	REXML::Formatters::Pretty.new.write(manifest, f)
+	f.puts(""); f.puts(""); f.puts("")
+
+	REXML::Formatters::Transitive.new.write(manifest, f)
+	f.puts(""); f.puts(""); f.puts("")
+
+	f.write(manifest.to_s)
+	f.close
+
+	return 0
+end
+
+exit main(ARGV)
