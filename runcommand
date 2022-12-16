@@ -144,32 +144,54 @@ class Win32::API
 	# 	return @@WaitForSingleObject.call(hHandle, dwMilliseconds)
 	# end
 
+	def self.CloseHandle(hObject)
+		@@CloseHandle ||= new("kernel32", "CloseHandle", "H", "I")
+		r = @@CloseHandle.call(hObject)
+		fail ArgumentError.new("CloseHandle")  if r == 0
+	end
+
+	STARTF_USESHOWWINDOW = 0x00000001
 	def self.CreateProcess(lpCommandLine, wShowWindow:nil)
 		@@CreateProcess ||= new("kernel32", "CreateProcessW", "PPPPIIPPPP", "I")
 		si = [0, nil, nil ,nil, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, nil, 0, 0, 0]
 		if wShowWindow
-			si[11] |= 1
+			si[11] |= STARTF_USESHOWWINDOW
 			si[12] = wShowWindow
 		end
 		si[0] = si.pack(Struct::STARTUPINFO).bytesize
 		si = si.pack(Struct::STARTUPINFO)
 		pi = [0, 0, 0, 0].pack(Struct::PROCESS_INFORMATION)
 		r = @@CreateProcess.call(nil, Win32::to_wstr(lpCommandLine), nil, nil, 0, 0, nil, nil, si, pi)
-		fail  if r == 0
+		fail ArgumentError.new("CreateProcess")  if r == 0
 		pi = pi.unpack(Struct::PROCESS_INFORMATION)
-		return { hProcess:pi[0], hThread:pi[1], dwProcessId:pi[2], dwThreadId:pi[3] }
+		pi = { hProcess:pi[0], hThread:pi[1], dwProcessId:pi[2], dwThreadId:pi[3] }
+		if block_given?
+			begin
+				hProcess = pi[:hProcess]
+				hThread = pi[:hThread]
+				return yield(pi)
+			ensure
+				CloseHandle(hThread)
+				CloseHandle(hProcess)
+			end
+		else
+			return pi
+		end
 	end
 
-	def self.CloseHandle(hObject)
-		@@CloseHandle ||= new("kernel32", "CloseHandle", "H", "I")
-		r = @@CloseHandle.call(hObject)
-		fail  if r == 0
-	end
-
-	TH32CS_SNAPPROCESS = 0x2
+	TH32CS_SNAPPROCESS = 0x00000002
 	def self.CreateToolhelp32Snapshot(dwFlags, th32ProcessID = 0)
 		@@CreateToolhelp32Snapshot ||= new("kernel32", "CreateToolhelp32Snapshot", "II", "H")
-		return @@CreateToolhelp32Snapshot.call(dwFlags, th32ProcessID)
+		hSnapshot = @@CreateToolhelp32Snapshot.call(dwFlags, th32ProcessID)
+		if block_given?
+			begin
+				return yield(hSnapshot)
+			ensure
+				CloseHandle(hSnapshot)
+			end
+		else
+			return hSnapshot
+		end
 	end
 
 	MAX_PATH = 260
@@ -197,28 +219,27 @@ end
 
 # 子孫が死に絶えるまで待つsystem()
 def system_wait_descendant(lpCommandLine, wShowWindow:nil)
-	pi = Win32::API.CreateProcess(lpCommandLine, wShowWindow:wShowWindow)
-	Win32::API.CloseHandle(pi[:hProcess])
-	Win32::API.CloseHandle(pi[:hThread])
-	descendants = { pi[:dwProcessId] => true }
-	sleep_pediod = 0.025
+	Win32::API.CreateProcess(lpCommandLine, wShowWindow:wShowWindow) do |pi|
+		descendants = { pi[:dwProcessId] => true }
+		sleep_pediod = 0.025
 
-	while !descendants.empty?
-		descendants.each_key { |pid| descendants[pid] = false }
+		while !descendants.empty?
+			descendants.each_key { |pid| descendants[pid] = false }
 
-		snapshot = Win32::API.CreateToolhelp32Snapshot(Win32::API::TH32CS_SNAPPROCESS)
-		while (pe = Win32::API.Process32Next(snapshot))
-			sn_pid = pe[:th32ProcessID]
-			sn_ppid = pe[:th32ParentProcessID]
-			descendants[sn_pid] = true  if descendants.has_key?(sn_pid)
-			descendants[sn_pid] = true  if descendants.has_key?(sn_ppid)
+			Win32::API.CreateToolhelp32Snapshot(Win32::API::TH32CS_SNAPPROCESS) do |snapshot|
+				while (pe = Win32::API.Process32Next(snapshot))
+					sn_pid = pe[:th32ProcessID]
+					sn_ppid = pe[:th32ParentProcessID]
+					descendants[sn_pid] = true  if descendants.has_key?(sn_pid)
+					descendants[sn_pid] = true  if descendants.has_key?(sn_ppid)
+				end
+			end
+
+			descendants.delete_if { |pid, live| !live }
+
+			sleep(sleep_pediod)
+			sleep_pediod += 0.025  if sleep_pediod < 0.5
 		end
-		Win32::API.CloseHandle(snapshot)
-
-		descendants.delete_if { |pid, live| !live }
-
-		sleep(sleep_pediod)
-		sleep_pediod += 0.025  if sleep_pediod < 0.5
 	end
 end
 
