@@ -8,7 +8,7 @@
 #----------------------------------------------------------------
 
 ProgName = "runcommand"
-Version = "1.01"
+Version = "1.02"
 #=====dpk===== Copyright2020
 Copyright = "Copyright (c) 2020-2022 by opa"
 #=====dpk=====
@@ -307,6 +307,8 @@ def system_config_filename
 end
 
 def create_system_config_file
+	fail "Invalid system:#{system_name}"  if !system_name || system_name == "all"
+
 	savedir = File.join(system_config_dir, "saves")
 	Dir.mkdir(savedir)  if !File.exist?(savedir)
 
@@ -412,49 +414,55 @@ def patch_retroarch_manifest
 	$log.info { "Applied: UTF-8 manifest" }
 end
 
-def run_retroarch(emulator_name, rom_filename)
+def run_retroarch(core_name=nil, rom_filename=nil)
 	core_map = {
 		"lr-beetle-pce-fast" =>	"mednafen_pce_fast",
 		"lr-mupen64plus" =>		"mupen64plus_next",
 		"lr-np2kai-ex" =>		"np2kai",
 	}
 
-	if core_map[emulator_name]
-		core_name = core_map[emulator_name]
-	else
-		core_name = emulator_name.gsub(/^lr-/, "")	# 先頭の lr- を取る
-		core_name = core_name.gsub("-", "_")		# - を _ に置き換える
-	end
-	core_name += "_libretro.dll"
-	$log.info { "Core: #{core_name}" }
+	if core_name
+		if core_map[core_name]
+			core_name = core_map[core_name]
+		else
+			core_name = core_name.gsub(/^lr-/, "")	# 先頭の lr- を取る
+			core_name = core_name.gsub("-", "_")		# - を _ に置き換える
+		end
+		core_name += "_libretro.dll"
+		$log.info { "Core: #{core_name}" }
 
-	create_system_config_file
+		create_system_config_file
+	end
+
+	tmplog = Tempfile.new(["retroarch_log", ".log"])
+	tmplog.close
+	verbose_log = File.exist?(File.join(File.dirname($PROGRAM_NAME), "retrolog"))
 
 	patch_retroarch_manifest
+
 	cmd = [retroarch_exename]
-	cmd += ["--libretro", File.join(retroarch_home, "cores", core_name)]
 	cmd += ["--config", system_config_filename]
-	if File.exist?(File.join(File.dirname($PROGRAM_NAME), "retrolog"))
+	cmd += ["--log-file", tmplog.path]
+	cmd += ["--libretro", File.join(retroarch_home, "cores", core_name)]  if core_name
+	if rom_filename
+		cmd += [rom_filename]
+	else
+		cmd += ["--menu"]
+	end
+	if verbose_log
 		tmpconf = Tempfile.new(["retroarch_log", ".cfg"])
 		tmpconf.puts('frontend_log_level = "0"');
 		tmpconf.puts('libretro_log_level = "0"');
-		tmpconf.puts('log_to_file = "true"');
-		tmpconf.puts('log_to_file_timestamp = "true"');
-		tmpconf.puts('log_verbosity = "true"');
-		tmpconf.flush
+		tmpconf.close
 
-		cmd += ["--verbose"]
 		cmd += ["--appendconfig", tmpconf.path]
+		cmd += ["--verbose"]
 	end
-	cmd += [rom_filename]
 	win32_system(*cmd)
-end
 
-def run_retroarch_plain
-	patch_retroarch_manifest
-	cmd = [retroarch_exename]
-	cmd += ["--config", system_config_filename]
-	win32_system(*cmd)
+	File.readlines(tmplog.path, chomp:true, encoding:Encoding::UTF_8).each do |aline|
+		$log.info { aline }
+	end
 end
 
 def determine_emulator_or_core(rom_filename)
@@ -506,7 +514,7 @@ def main(args)
 		when "retroarch"
 			$log.info { "Emulator: RetroArch" }
 			set_system_name("all")
-			run_retroarch_plain
+			run_retroarch
 		else
 			fail "Unknown emulator: #{emulator_name}"
 		end
