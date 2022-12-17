@@ -44,6 +44,11 @@ def treat_path_separator(path)
 	return path
 end
 
+def treat_path_alt_separator(path)
+	path = path.gsub(File::SEPARATOR, File::ALT_SEPARATOR)  if File::ALT_SEPARATOR
+	return path
+end
+
 # Win32(WIDE)との橋渡し用
 module Win32
 	WIDE = Encoding::UTF_16LE
@@ -525,7 +530,7 @@ def main(args)
 		# $log.info { "sys_port: #{sys_port}" }
 		set_system_name(args[2])
 		$log.info { "System: #{system_name}" }
-		rom_filename = treat_path_separator(args[3])
+		rom_filename = treat_path_alt_separator(args[3])
 		$log.info { "Rom: #{rom_filename}" }
 
 		emulator_or_core = determine_emulator_or_core(rom_filename)
