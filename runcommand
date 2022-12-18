@@ -508,7 +508,7 @@ def determine_emulator_or_core(rom_filename)
 end
 
 def main(args)
-	$log = Logger.new($PROGRAM_NAME + ".log")
+	$log = Logger.new($PROGRAM_NAME + ".log", 2, 128 * 1024)
 	$log.info { "--------" }
 	$log.info { "Start: #{$PROGRAM_NAME} #{args.join(" ")}" }
 
