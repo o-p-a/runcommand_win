@@ -8,7 +8,7 @@
 #----------------------------------------------------------------
 
 ProgName = "runcommand"
-Version = "1.02"
+Version = "1.03"
 #=====dpk===== Copyright2020
 Copyright = "Copyright (c) 2020-2022 by opa"
 #=====dpk=====
@@ -100,11 +100,13 @@ if os_is_windows?
 			args.each_with_index do |x, i|
 				case @import[i]
 				when Fiddle::TYPE_VOIDP
-					args[i], = [x].pack((x.nil? || x.is_a?(String)) ? "p" : "J").unpack("j")
+					args[i], = ((x.nil? || x.is_a?(String)) ? [x].pack("p") : [x.to_i].pack("J")).unpack("j")
 				when Fiddle::TYPE_LONG
 					args[i], = [x].pack("L").unpack("l")
 				when Fiddle::TYPE_LONG_LONG
 					args[i], = [x].pack("Q").unpack("q")
+				else
+					fail
 				end
 			end
 			ret, = @func.call(*args)
@@ -124,6 +126,9 @@ else
 end
 
 class Win32::API
+	FALSE = 0
+	TRUE = 1
+
 	# Win64では、ポインタとハンドルは64bit
 	class Struct
 		AMD64 = (Win32::PROCESSOR_ARCHITECTURE == :AMD64)
@@ -220,6 +225,73 @@ class Win32::API
 			szExeFile: Win32::from_wstr(pe[9]),
 		}
 	end
+
+	def self.EnumWindows(lParam=0, &lpEnumFunc)
+		@@EnumWindows ||= new("user32", "EnumWindows", "PL", "I")
+		callback = Fiddle::Closure::BlockCaller.new(Fiddle::TYPE_LONG, [Fiddle::TYPE_VOIDP, Fiddle::TYPE_LONG]) do |hWnd, lParam|
+			lpEnumFunc.call(hWnd, lParam)
+		end
+		return @@EnumWindows.call(callback, lParam)
+	end
+
+	def self.GetWindowThreadProcessId(hWnd)
+		@@GetWindowThreadProcessId ||= new("user32", "GetWindowThreadProcessId", "HP", "I")
+		dwProcessId = [0].pack("L")
+		r = @@GetWindowThreadProcessId.call(hWnd, dwProcessId)
+		dwProcessId = dwProcessId.unpack("L")[0]
+		return { dwThreadId:r, dwProcessId:dwProcessId }
+	end
+
+	SW_HIDE = 0
+	SW_SHOWNORMAL = 1
+	SW_SHOWMINIMIZED = 2
+	SW_SHOWMAXIMIZED = 3
+	SW_SHOWNOACTIVATE = 4
+	SW_SHOW = 5
+	SW_MINIMIZE = 6
+	SW_SHOWMINNOACTIVE = 7
+	SW_SHOWNA = 8
+	SW_RESTORE = 9
+	SW_SHOWDEFAULT = 10
+	SW_FORCEMINIMIZE = 11
+	def self.ShowWindow(hWnd, nCmdShow)
+		@@ShowWindow ||= new("user32", "ShowWindow", "HI", "I")
+		r = @@ShowWindow.call(hWnd, nCmdShow)
+		return r != 0
+	end
+
+	def self.BringWindowToTop(hWnd)
+		@@BringWindowToTop ||= new("user32", "BringWindowToTop", "H", "I")
+		r = @@BringWindowToTop.call(hWnd)
+		return r != 0
+	end
+
+	def self.SetForegroundWindow(hWnd)
+		@@SetForegroundWindow ||= new("user32", "SetForegroundWindow", "H", "I")
+		r = @@SetForegroundWindow.call(hWnd)
+		return r != 0
+	end
+
+	def self.GetClassName(hWnd)
+		@@GetClassName ||= new("user32", "GetClassNameW", "HPI", "I")
+		lpClassName = Win32::wstr(256)
+		r = @@GetClassName.call(hWnd, lpClassName, 256)
+		return nil  if r == 0
+		return Win32::from_wstr(lpClassName)
+	end
+end
+
+def pid2hwnd(dwProcessId)
+	hWnds = []
+	Win32::API.EnumWindows do |hWnd, lParam|
+		pid = Win32::API.GetWindowThreadProcessId(hWnd)[:dwProcessId]
+
+		hWnds << hWnd  if pid == dwProcessId
+
+		Win32::API::TRUE
+	end
+
+	return hWnds
 end
 
 # 子孫が死に絶えるまで待つsystem()
@@ -242,6 +314,8 @@ def system_wait_descendant(lpCommandLine, wShowWindow:nil)
 
 			descendants.delete_if { |pid, live| !live }
 
+			yield(pi, descendants.keys)  if block_given?
+
 			sleep(sleep_pediod)
 			sleep_pediod += 0.025  if sleep_pediod < 0.5
 		end
@@ -252,10 +326,10 @@ def Win32_cmdshell_escape(*cmd)
 	return cmd.map{ |t| t =~ /\s/ ? "\"#{t}\"" : t }.join(" ")
 end
 
-def win32_system(*cmd)
+def win32_system(*cmd, wShowWindow:nil)
 	cmd = Win32_cmdshell_escape(*cmd)
 	$log.info { "Exec: #{cmd}" }
-	system_wait_descendant(cmd, wShowWindow:0)
+	system_wait_descendant(cmd, wShowWindow:wShowWindow)
 end
 
 def get_retroarch_home
@@ -363,7 +437,7 @@ def patch_retroarch_manifest
 	cmd += ["-nologo"]
 	cmd += ["-inputresource:#{exe_name}"]
 	cmd += ["-out:#{temp.path}"]
-	win32_system(*cmd)
+	win32_system(*cmd, wShowWindow:Win32::API::SW_HIDE)
 
 	manifest = REXML::Document.new(File.read(temp.path))
 	temp.close!
@@ -411,7 +485,7 @@ def patch_retroarch_manifest
 	cmd += ["-nologo"]
 	cmd += ["-manifest", temp.path]
 	cmd += ["-outputresource:#{exe_name}"]
-	win32_system(*cmd)
+	win32_system(*cmd, wShowWindow:Win32::API::SW_HIDE)
 	temp.close!
 
 	File.utime(orig_mtime + 60, orig_mtime + 60, exe_name)
@@ -447,7 +521,7 @@ def run_retroarch(core_name=nil, rom_filename=nil)
 
 	cmd = [retroarch_exename]
 	cmd += ["--config", system_config_filename]
-	cmd += ["--log-file", tmplog.path]
+	# cmd += ["--log-file", tmplog.path]
 	cmd += ["--libretro", File.join(retroarch_home, "cores", core_name)]  if core_name
 	if rom_filename
 		cmd += [rom_filename]
@@ -463,6 +537,7 @@ def run_retroarch(core_name=nil, rom_filename=nil)
 		cmd += ["--appendconfig", tmpconf.path]
 		cmd += ["--verbose"]
 	end
+	sleep(3)
 	win32_system(*cmd)
 
 	File.readlines(tmplog.path, chomp:true, encoding:Encoding::UTF_8).each do |aline|
@@ -554,10 +629,35 @@ def main(args)
 rescue Exception => e
 	e.backtrace.each_with_index do |t, i|
 		s = (i == 0) ? "#{t}: #{e.message} (#{e.class.name})" : "    from #{t}"
+		$stderr.puts(s)
 		$log.error(s)
-		puts(s)
 	end
 	return 1
 end
 
-exit main(ARGV)
+def debugmain(args)
+	$log = Logger.new($PROGRAM_NAME + "_debug.log", 2, 128 * 1024)
+	$log.info { "--------(debug)" }
+	$log.info { "Start: #{$PROGRAM_NAME} #{args.join(" ")}" }
+
+	hWnds = pid2hwnd(3760)
+	hWnds.each do |hWnd|
+		p hWnd
+		cn = Win32::API.GetClassName(hWnd)
+		next  if cn != "RetroArch"
+		# Win32::API.ShowWindow(hWnd, 1)
+		# Win32::API.BringWindowToTop(hWnd)
+		Win32::API.SetForegroundWindow(hWnd)
+	end
+
+	return 0
+rescue Exception => e
+	e.backtrace.each_with_index do |t, i|
+		s = (i == 0) ? "#{t}: #{e.message} (#{e.class.name})" : "    from #{t}"
+		$stderr.puts(s)
+		$log.error(s)
+	end
+	return 1
+end
+
+exit debugmain(ARGV)
