@@ -79,9 +79,9 @@ if os_is_windows?
 		def typemap(t)
 			case t
 			when "V";			Fiddle::TYPE_VOID
-			when /^[PH]$/i;		Fiddle::TYPE_VOIDP
-			when /^[NLI]$/i;	Fiddle::TYPE_LONG
-			when /^Q$/i;		Fiddle::TYPE_LONG_LONG
+			when /^[PH]$/;		Fiddle::TYPE_VOIDP
+			when /^[NLI]$/;		Fiddle::TYPE_LONG
+			when "Q";			Fiddle::TYPE_LONG_LONG
 			else;				fail
 			end
 		end
@@ -135,7 +135,8 @@ class Win32::API
 
 		STARTUPINFO = AMD64 ? "Lx4p3L8S2x4PQ3" : "Lp3L8S2PL3"
 		PROCESS_INFORMATION = AMD64 ? "Q2L2" : "L4"
-		PROCESSENTRY32 = AMD64 ? "LLLx4PLLLlLa*" : "LLLPLLLlLa*"
+		PROCESSENTRY32 = AMD64 ? "L3x4PL3lLa*" : "L3PL3lLa*"
+		MSG = AMD64 ? "QLx4Q2L4" : "L8"
 	end
 
 	# def self.GetCommandLine
@@ -160,8 +161,25 @@ class Win32::API
 		fail ArgumentError.new("CloseHandle")  if r == 0
 	end
 
+	CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+	CREATE_DEFAULT_ERROR_MODE = 0x04000000
+	CREATE_NEW_CONSOLE = 0x00000010
+	CREATE_NEW_PROCESS_GROUP = 0x00000200
+	CREATE_NO_WINDOW = 0x08000000
+	CREATE_PROTECTED_PROCESS = 0x00040000
+	CREATE_PRESERVE_CODE_AUTHZ_LEVEL = 0x02000000
+	CREATE_SECURE_PROCESS = 0x00400000
+	CREATE_SEPARATE_WOW_VDM = 0x00000800
+	CREATE_SHARED_WOW_VDM = 0x00001000
+	CREATE_SUSPENDED = 0x00000004
+	CREATE_UNICODE_ENVIRONMENT = 0x00000400
+	DEBUG_ONLY_THIS_PROCESS = 0x00000002
+	DEBUG_PROCESS = 0x00000001
+	DETACHED_PROCESS = 0x00000008
+	EXTENDED_STARTUPINFO_PRESENT = 0x00080000
+	INHERIT_PARENT_AFFINITY = 0x00010000
 	STARTF_USESHOWWINDOW = 0x00000001
-	def self.CreateProcess(lpCommandLine, wShowWindow:nil)
+	def self.CreateProcess(lpCommandLine, dwCreationFlags:0, wShowWindow:nil)
 		@@CreateProcess ||= new("kernel32", "CreateProcessW", "PPPPIIPPPP", "I")
 		si = [0, nil, nil ,nil, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, nil, 0, 0, 0]
 		if wShowWindow
@@ -171,7 +189,7 @@ class Win32::API
 		si[0] = si.pack(Struct::STARTUPINFO).bytesize
 		si = si.pack(Struct::STARTUPINFO)
 		pi = [0, 0, 0, 0].pack(Struct::PROCESS_INFORMATION)
-		r = @@CreateProcess.call(nil, Win32::to_wstr(lpCommandLine), nil, nil, 0, 0, nil, nil, si, pi)
+		r = @@CreateProcess.call(nil, Win32::to_wstr(lpCommandLine), nil, nil, 0, dwCreationFlags, nil, nil, si, pi)
 		fail ArgumentError.new("CreateProcess")  if r == 0
 		pi = pi.unpack(Struct::PROCESS_INFORMATION)
 		pi = { hProcess:pi[0], hThread:pi[1], dwProcessId:pi[2], dwThreadId:pi[3] }
@@ -254,11 +272,11 @@ class Win32::API
 	SW_RESTORE = 9
 	SW_SHOWDEFAULT = 10
 	SW_FORCEMINIMIZE = 11
-	def self.ShowWindow(hWnd, nCmdShow)
-		@@ShowWindow ||= new("user32", "ShowWindow", "HI", "I")
-		r = @@ShowWindow.call(hWnd, nCmdShow)
-		return r != 0
-	end
+	# def self.ShowWindow(hWnd, nCmdShow)
+	# 	@@ShowWindow ||= new("user32", "ShowWindow", "HI", "I")
+	# 	r = @@ShowWindow.call(hWnd, nCmdShow)
+	# 	return r != 0
+	# end
 
 	def self.BringWindowToTop(hWnd)
 		@@BringWindowToTop ||= new("user32", "BringWindowToTop", "H", "I")
@@ -279,6 +297,31 @@ class Win32::API
 		return nil  if r == 0
 		return Win32::from_wstr(lpClassName)
 	end
+
+	WM_APP = 0x8000
+	def self.PostMessage(hWnd, msg, wParam, lParam)
+		@@PostMessage ||= new("user32", "PostMessageW", "HIQQ", "I")
+		r = @@PostMessage.call(hWnd, msg, wParam, lParam)
+		return r != 0
+	end
+
+	def self.GetMessage(hWnd, wMsgFilterMin, wMsgFilterMax)
+		@@GetMessage ||= new("user32", "GetMessageW", "PHII", "I")
+		lpMsg = [0,0,0,0,0,0,0,0].pack(Struct::MSG)
+		r = @@GetMessage.call(lpMsg, hWnd, wMsgFilterMin, wMsgFilterMax)
+		return nil  if r == -1
+		lpMsg = lpMsg.unpack(Struct::MSG)
+		return {
+			hWnd: lpMsg[0],
+			message: lpMsg[1],
+			wParam: lpMsg[2],
+			lParam: lpMsg[3],
+			time: lpMsg[4],
+			pt_x: lpMsg[5],
+			pt_y: lpMsg[6],
+			lPrivate: lpMsg[7],
+		}
+	end
 end
 
 def pid2hwnd(dwProcessId)
@@ -295,8 +338,8 @@ def pid2hwnd(dwProcessId)
 end
 
 # 子孫が死に絶えるまで待つsystem()
-def system_wait_descendant(lpCommandLine, wShowWindow:nil)
-	Win32::API.CreateProcess(lpCommandLine, wShowWindow:wShowWindow) do |pi|
+def system_wait_descendant(lpCommandLine, dwCreationFlags:0, wShowWindow:nil)
+	Win32::API.CreateProcess(lpCommandLine, dwCreationFlags:dwCreationFlags, wShowWindow:wShowWindow) do |pi|
 		descendants = { pi[:dwProcessId] => true }
 		sleep_pediod = 0.025
 
@@ -326,10 +369,37 @@ def Win32_cmdshell_escape(*cmd)
 	return cmd.map{ |t| t =~ /\s/ ? "\"#{t}\"" : t }.join(" ")
 end
 
-def win32_system(*cmd, wShowWindow:nil)
+def win32_system_bg(*cmd)
 	cmd = Win32_cmdshell_escape(*cmd)
 	$log.info { "Exec: #{cmd}" }
-	system_wait_descendant(cmd, wShowWindow:wShowWindow)
+	system_wait_descendant(cmd, wShowWindow:Win32::API::SW_HIDE)
+end
+
+def win32_system_fg(*cmd)
+	cmd = Win32_cmdshell_escape(*cmd)
+	$log.info { "Exec: #{cmd}" }
+	if true
+		system_wait_descendant(cmd, wShowWindow:Win32::API::SW_SHOWNORMAL)
+	else
+		bringed = false
+		system_wait_descendant(cmd, wShowWindow:Win32::API::SW_SHOWNORMAL) do |pi, descendants|
+			sleep(5)
+			$log.info { descendants.inspect }
+			if !bringed
+				descendants.each do |pid|
+					hWnds = pid2hwnd(pid)
+					hWnds.each do |hWnd|
+						if Win32::API.GetClassName(hWnd) == "RetroArch"
+							$log.info { Win32::API.GetClassName(hWnd) }
+							Win32::API.SetForegroundWindow(hWnd)
+							Win32::API.BringWindowToTop(hWnd)
+							# bringed = true
+						end
+					end
+				end
+			end
+		end
+	end
 end
 
 def get_retroarch_home
@@ -437,7 +507,7 @@ def patch_retroarch_manifest
 	cmd += ["-nologo"]
 	cmd += ["-inputresource:#{exe_name}"]
 	cmd += ["-out:#{temp.path}"]
-	win32_system(*cmd, wShowWindow:Win32::API::SW_HIDE)
+	win32_system_bg(*cmd)
 
 	manifest = REXML::Document.new(File.read(temp.path))
 	temp.close!
@@ -485,7 +555,7 @@ def patch_retroarch_manifest
 	cmd += ["-nologo"]
 	cmd += ["-manifest", temp.path]
 	cmd += ["-outputresource:#{exe_name}"]
-	win32_system(*cmd, wShowWindow:Win32::API::SW_HIDE)
+	win32_system_bg(*cmd)
 	temp.close!
 
 	File.utime(orig_mtime + 60, orig_mtime + 60, exe_name)
@@ -538,7 +608,7 @@ def run_retroarch(core_name=nil, rom_filename=nil)
 		cmd += ["--verbose"]
 	end
 	sleep(3)
-	win32_system(*cmd)
+	win32_system_fg(*cmd)
 
 	File.readlines(tmplog.path, chomp:true, encoding:Encoding::UTF_8).each do |aline|
 		$log.info { aline }
@@ -582,10 +652,17 @@ def determine_emulator_or_core(rom_filename)
 	return "(#{system_name})"
 end
 
+def dummyMessage
+	Win32::API.PostMessage(nil, Win32::API::WM_APP, -1, -2)
+	Win32::API.GetMessage(nil, Win32::API::WM_APP, Win32::API::WM_APP)
+end
+
 def main(args)
 	$log = Logger.new($PROGRAM_NAME + ".log", 2, 128 * 1024)
 	$log.info { "--------" }
 	$log.info { "Start: #{$PROGRAM_NAME} #{args.join(" ")}" }
+
+	dummyMessage
 
 	case args.size
 	when 1
@@ -660,4 +737,4 @@ rescue Exception => e
 	return 1
 end
 
-exit debugmain(ARGV)
+exit main(ARGV)
