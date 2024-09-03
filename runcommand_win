@@ -7,7 +7,7 @@
 # 2020/09/18 opa⁠🙂
 #----------------------------------------------------------------
 
-ProgName = "runcommand"
+ProgName = "runcommand_win"
 Version = "1.05"
 #=====dpk===== Copyright2020
 Copyright = "Copyright (c) 2020-2023 by opa"
