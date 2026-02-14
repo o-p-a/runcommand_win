@@ -8,9 +8,9 @@
 #----------------------------------------------------------------
 
 ProgName = "runcommand_win"
-Version = "1.05"
+Version = "1.06"
 #=====dpk===== Copyright2020
-Copyright = "Copyright (c) 2020-2023 by opa"
+Copyright = "Copyright (c) 2020-2024 by opa"
 #=====dpk=====
 
 require 'pathname'
